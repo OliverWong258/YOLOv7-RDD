@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from utils.general import bbox_iou, bbox_alpha_iou, box_iou, box_giou, box_diou, box_ciou, xywh2xyxy
 from utils.torch_utils import is_parallel
 
+import pdb
 
 def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#issuecomment-598028441
     # return positive, negative label smoothing BCE targets
@@ -481,8 +482,15 @@ class ComputeLoss:
                 # Append targets to text file
                 # with open('targets.txt', 'a') as file:
                 #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
-
+            
             obji = self.BCEobj(pi[..., 4], tobj)
+
+            """ # 对于漏检的目标（tobj == 1 且 pi[..., 4] == 0），增加损失的贡献
+            penalty_factor = 100  # 惩罚因子，根据需要调整
+            penalty_mask = (tobj == 1) & (pi[..., 4] == 0)  # 找到漏检目标的位置
+            # 将漏检目标的损失加上惩罚因子
+            obji += self.BCEobj(pi[..., 4][penalty_mask], tobj[penalty_mask])*penalty_factor """
+
             lobj += obji * self.balance[i]  # obj loss
             if self.autobalance:
                 self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
@@ -579,7 +587,7 @@ class ComputeLossOTA:
         for k in 'na', 'nc', 'nl', 'anchors', 'stride':
             setattr(self, k, getattr(det, k))
 
-    def __call__(self, p, targets, imgs):  # predictions, targets, model   
+    def __call__(self, p, targets, imgs, penalty=False):  # predictions, targets, model   
         device = targets.device
         lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
         bs, as_, gjs, gis, targets, anchors = self.build_targets(p, targets, imgs)
@@ -619,8 +627,12 @@ class ComputeLossOTA:
                 # Append targets to text file
                 # with open('targets.txt', 'a') as file:
                 #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
+            # 定义加权函数
+            def weight_fn(tobj, alpha=0.5):
+                return alpha * tobj + 1 - alpha
 
-            obji = self.BCEobj(pi[..., 4], tobj)
+            obji = self.BCEobj(pi[..., 4], tobj) if not penalty else self.BCEobj(pi[..., 4], tobj * weight_fn(tobj))
+
             lobj += obji * self.balance[i]  # obj loss
             if self.autobalance:
                 self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
@@ -1401,6 +1413,10 @@ class ComputeLossAuxOTA:
             fg_mask_inboxes = matching_matrix.sum(0) > 0.0
             matched_gt_inds = matching_matrix[:, fg_mask_inboxes].argmax(0)
         
+            #indices should be either on cpu or on the same device as the indexed tensor (cpu)
+            device = from_which_layer.device
+            fg_mask_inboxes = fg_mask_inboxes.to(device)
+            
             from_which_layer = from_which_layer[fg_mask_inboxes]
             all_b = all_b[fg_mask_inboxes]
             all_a = all_a[fg_mask_inboxes]
@@ -1553,6 +1569,10 @@ class ComputeLossAuxOTA:
                 matching_matrix[cost_argmin, anchor_matching_gt > 1] = 1.0
             fg_mask_inboxes = matching_matrix.sum(0) > 0.0
             matched_gt_inds = matching_matrix[:, fg_mask_inboxes].argmax(0)
+
+            #indices should be either on cpu or on the same device as the indexed tensor (cpu)
+            device = from_which_layer.device
+            fg_mask_inboxes = fg_mask_inboxes.to(device)
         
             from_which_layer = from_which_layer[fg_mask_inboxes]
             all_b = all_b[fg_mask_inboxes]

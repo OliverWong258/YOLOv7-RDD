@@ -41,6 +41,8 @@ results*.csv
 coco/
 coco128/
 VOC/
+RDD2022/
+data/test_RDD2022.yaml
 
 coco2017labels-segments.zip
 test2017.zip
@@ -261,3 +263,10 @@ com_crashlytics_export_strings.xml
 crashlytics.properties
 crashlytics-build.properties
 fabric.properties
+
+# Python tools
+python_tools/
+
+# evolve
+evolve.txt
+evolve.png

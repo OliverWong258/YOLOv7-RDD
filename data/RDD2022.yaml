@@ -1,0 +1,11 @@
+# 训练集图像路径
+train: ./RDD2022/images/train
+
+# 验证集图像路径
+val: ./RDD2022/images/val
+
+# 类别数量
+nc: 3
+
+# 类别名称列表
+names: ['D00', 'D10', 'D20']

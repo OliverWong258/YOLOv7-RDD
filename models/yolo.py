@@ -20,6 +20,49 @@ except ImportError:
     thop = None
 
 
+class DecoupledHead(nn.Module):
+	#代码是参考啥都会一点的老程大佬的 https://blog.csdn.net/weixin_44119362
+    def __init__(self, ch=256, nc=80, width=1.0, anchors=(), type=False):
+        super().__init__()
+        self.nc = nc  # number of classes
+        self.nl = len(anchors)  # number of detection layers 3
+        self.na = len(anchors[0]) // 2  # number of anchors 3
+        self.merge = Conv(ch, 256 * width, 1, 1)
+
+        conv_types = {
+            False: Conv,
+            True: GhostConv
+        }
+
+        conv_class = conv_types.get(type)
+
+        if conv_class is None:
+            raise ValueError(f"Unknown type: {type}")
+
+        self.cls_convs1 = conv_class(256 * width, 256 * width, 3, 1, 1)
+        self.cls_convs2 = conv_class(256 * width, 256 * width, 3, 1, 1)
+        self.reg_convs1 = conv_class(256 * width, 256 * width, 3, 1, 1)
+        self.reg_convs2 = conv_class(256 * width, 256 * width, 3, 1, 1)
+        self.cls_preds = nn.Conv2d(256 * width, self.nc * self.na, 1)
+        self.reg_preds = nn.Conv2d(256 * width, 4 * self.na, 1)
+        self.obj_preds = nn.Conv2d(256 * width, 1 * self.na, 1)
+
+    def forward(self, x):
+        x = self.merge(x)
+        # 分类=3x3conv + 3x3conv + 1x1convpred
+        x1 = self.cls_convs1(x)
+        x1 = self.cls_convs2(x1)
+        x1 = self.cls_preds(x1)
+        # 回归=3x3conv（共享） + 3x3conv（共享） + 1x1pred
+        x2 = self.reg_convs1(x)
+        x2 = self.reg_convs2(x2)
+        x21 = self.reg_preds(x2)
+        # 置信度=3x3conv（共享）+ 3x3conv（共享） + 1x1pred
+        x22 = self.obj_preds(x2)
+        out = torch.cat([x21, x22, x1], 1)
+        return out
+
+
 class Detect(nn.Module):
     stride = None  # strides computed during build
     export = False  # onnx export
@@ -101,8 +144,9 @@ class IDetect(nn.Module):
     include_nms = False
     concat = False
 
-    def __init__(self, nc=80, anchors=(), ch=()):  # detection layer
+    def __init__(self, nc=80, anchors=(), Decoupled=False, type=False, ch=()):  # detection layer
         super(IDetect, self).__init__()
+        self.decoupled=Decoupled
         self.nc = nc  # number of classes
         self.no = nc + 5  # number of outputs per anchor
         self.nl = len(anchors)  # number of detection layers
@@ -111,8 +155,9 @@ class IDetect(nn.Module):
         a = torch.tensor(anchors).float().view(self.nl, -1, 2)
         self.register_buffer('anchors', a)  # shape(nl,na,2)
         self.register_buffer('anchor_grid', a.clone().view(self.nl, 1, -1, 1, 1, 2))  # shape(nl,1,na,1,1,2)
-        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
-        
+        #self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+        self.m = nn.ModuleList(DecoupledHead(x, nc, 1, anchors, type) for x in ch) if Decoupled else nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)
+
         self.ia = nn.ModuleList(ImplicitA(x) for x in ch)
         self.im = nn.ModuleList(ImplicitM(self.no * self.na) for _ in ch)
 
@@ -545,7 +590,8 @@ class Model(nn.Module):
             check_anchor_order(m)
             m.anchors /= m.stride.view(-1, 1, 1)
             self.stride = m.stride
-            self._initialize_biases()  # only run once
+            # For Decouple head
+            if not m.decoupled: self._initialize_biases()  # only run once
             # print('Strides: %s' % m.stride.tolist())
         if isinstance(m, IAuxDetect):
             s = 256  # 2x min stride
@@ -749,7 +795,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                 pass
 
         n = max(round(n * gd), 1) if n > 1 else n  # depth gain
-        if m in [nn.Conv2d, Conv, RobustConv, RobustConv2, DWConv, GhostConv, RepConv, RepConv_OREPA, DownC, 
+        if m in [nn.Conv2d, Conv, RobustConv, RobustConv2, GhostConv, RepConv, RepConv_OREPA, DownC, 
                  SPP, SPPF, SPPCSPC, GhostSPPCSPC, MixConv2d, Focus, Stem, GhostStem, CrossConv, 
                  Bottleneck, BottleneckCSPA, BottleneckCSPB, BottleneckCSPC, 
                  RepBottleneck, RepBottleneckCSPA, RepBottleneckCSPB, RepBottleneckCSPC,  
@@ -759,10 +805,14 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                  RepResX, RepResXCSPA, RepResXCSPB, RepResXCSPC, 
                  Ghost, GhostCSPA, GhostCSPB, GhostCSPC,
                  SwinTransformerBlock, STCSPA, STCSPB, STCSPC,
-                 SwinTransformer2Block, ST2CSPA, ST2CSPB, ST2CSPC]:
+                 SwinTransformer2Block, ST2CSPA, ST2CSPB, ST2CSPC,
+                 GSConv,
+                 Conv_BN_HSwish, MobileNetV3_InvertedResidual,
+                 Down_wt,
+                 PatchMerging, PatchEmbed, SwinStage]:
             c1, c2 = ch[f], args[0]
-            if c2 != no:  # if not output
-                c2 = make_divisible(c2 * gw, 8)
+            if c2 != no and c2 != 29 and c2 != 26 and c2 != 58:  # if not output
+                c2 = make_divisible(c2 * gw, 8)                
 
             args = [c1, c2, *args[1:]]
             if m in [DownC, SPPCSPC, GhostSPPCSPC, 
@@ -779,8 +829,27 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                 n = 1
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
+        elif m in [ELAN, ELAN_H]:
+            c1, c2 = ch[f], args[0]
+            if c2 != no:
+                c2 = make_divisible(c2 * gw, 8)
+            args = [c1, c2, *args[1:]]
+        elif m in [MP_1, MP_2]:
+            c1, c2 = ch[f], args[0]
+            if c2 != no:
+                c2 = make_divisible(c2 * gw, 8)
+            args = [c1, c2, *args[1:]]
         elif m is Concat:
             c2 = sum([ch[x] for x in f])
+        # 加权求和
+        elif m is WeightedSum:
+            c2 = ch[f[0]]  # 假设两个输入的通道数相同
+        # Sobel算子
+        elif m in [Sobel]:
+            c2 = ch[f]  # Sobel 输出通道数与输入通道数相同
+        # 加入bifpn_add结构
+        elif m in [BiFPN_Add2, BiFPN_Add3]:
+            c2 = max([ch[x] for x in f])
         elif m is Chuncat:
             c2 = sum([ch[x] for x in f])
         elif m is Shortcut:
@@ -795,6 +864,8 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             c2 = ch[f] * 4
         elif m is Contract:
             c2 = ch[f] * args[0] ** 2
+        elif m is space_to_depth:
+            c2 = 4 * ch[f]
         elif m is Expand:
             c2 = ch[f] // args[0] ** 2
         else:

@@ -22,8 +22,8 @@ def test(data,
          weights=None,
          batch_size=32,
          imgsz=640,
-         conf_thres=0.001,
-         iou_thres=0.6,  # for NMS
+         conf_thres=0.001, # 0.001,
+         iou_thres=0.6, #0.6,  # for NMS
          save_json=False,
          single_cls=False,
          augment=False,
@@ -245,6 +245,8 @@ def test(data,
     # Plots
     if plots:
         confusion_matrix.plot(save_dir=save_dir, names=list(names.values()))
+        # print the matrix
+        confusion_matrix.print()
         if wandb_logger and wandb_logger.wandb:
             val_batches = [wandb_logger.wandb.Image(str(f), caption=f.name) for f in sorted(save_dir.glob('test*.jpg'))]
             wandb_logger.log({"Validation": val_batches})

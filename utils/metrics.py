@@ -11,7 +11,7 @@ from . import general
 
 def fitness(x):
     # Model fitness as a weighted combination of metrics
-    w = [0.0, 0.0, 0.1, 0.9]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95]
+    w = [0.0, 0.0, 1.0, 0.0]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95]
     return (x[:, :4] * w).sum(1)
 
 
@@ -171,7 +171,7 @@ class ConfusionMatrix:
             fig = plt.figure(figsize=(12, 9), tight_layout=True)
             sn.set(font_scale=1.0 if self.nc < 50 else 0.8)  # for label size
             labels = (0 < len(names) < 99) and len(names) == self.nc  # apply names to ticklabels
-            sn.heatmap(array, annot=self.nc < 30, annot_kws={"size": 8}, cmap='Blues', fmt='.2f', square=True,
+            sn.heatmap(array, annot=self.nc < 30, annot_kws={"size": 8}, cmap='Blues', fmt='.3f', square=True,
                        xticklabels=names + ['background FP'] if labels else "auto",
                        yticklabels=names + ['background FN'] if labels else "auto").set_facecolor((1, 1, 1))
             fig.axes[0].set_xlabel('True')
@@ -181,6 +181,7 @@ class ConfusionMatrix:
             pass
 
     def print(self):
+        print("Confusion Matrix:")
         for i in range(self.nc + 1):
             print(' '.join(map(str, self.matrix[i])))
 
